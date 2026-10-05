@@ -1,0 +1,777 @@
+import express from 'express';
+import { createServer as createViteServer } from 'vite';
+import path from 'path';
+import fs from 'fs';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import cookieParser from 'cookie-parser';
+import axios from 'axios';
+
+const PORT = Number(process.env.PORT) || 3000;
+const DB_FILE = path.join(process.cwd(), 'db.json');
+const JWT_SECRET = process.env.JWT_SECRET || 'swifttrack-secret-2026';
+
+// Initial DB structure
+const initialDb = {
+  users: [],
+  shipments: [],
+  flights: [],
+  supportTickets: [],
+  reviews: [],
+  news: []
+};
+
+let dbCache: any = null;
+
+// Load or initialize DB
+function getDb() {
+  if (dbCache) return dbCache;
+  
+  if (!fs.existsSync(DB_FILE)) {
+    fs.writeFileSync(DB_FILE, JSON.stringify(initialDb, null, 2));
+    dbCache = JSON.parse(JSON.stringify(initialDb));
+  } else {
+    try {
+      dbCache = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+    } catch (e) {
+      console.error('Error loading DB, resetting to initial state');
+      dbCache = JSON.parse(JSON.stringify(initialDb));
+    }
+  }
+
+  // Auto-create requested admin if missing
+  const adminEmail = 'admin12345@gmail.com';
+  if (dbCache.users && !dbCache.users.find((u: any) => u.email === adminEmail)) {
+    console.log('Auto-creating requested admin user...');
+    const salt = bcrypt.genSaltSync(10);
+    const hash = bcrypt.hashSync('admin12345', salt);
+    dbCache.users.push({
+      uid: 'admin-primary',
+      email: adminEmail,
+      password: hash,
+      name: 'System Administrator',
+      role: 'admin',
+      customerID: 'ADM-001',
+      createdAt: new Date().toISOString()
+    });
+    saveDb(dbCache);
+  }
+
+  return dbCache;
+}
+
+function saveDb(db: any) {
+  dbCache = db;
+  try {
+    const data = JSON.stringify(db, null, 2);
+    // Atomic write: write to temp file then rename
+    const tempFile = DB_FILE + '.tmp';
+    fs.writeFileSync(tempFile, data);
+    fs.renameSync(tempFile, DB_FILE);
+  } catch (err) {
+    console.error('Error saving DB to file:', err);
+  }
+}
+
+// SSE Clients
+let clients: any[] = [];
+
+function broadcast(type: string, data: any = {}) {
+  const message = `data: ${JSON.stringify({ type, ...data })}\n\n`;
+  clients.forEach(client => client.res.write(message));
+}
+
+async function startServer() {
+  const app = express();
+  
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  app.use(cookieParser());
+
+  // Request Logger
+  app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    if (req.method === 'POST' || req.method === 'PUT') {
+      console.log('Body keys:', Object.keys(req.body || {}));
+    }
+    next();
+  });
+
+  // Test Route
+  app.get('/api/ping', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  // SSE Updates Route
+  app.get('/api/updates', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const clientId = Date.now();
+    const newClient = { id: clientId, res };
+    clients.push(newClient);
+
+    req.on('close', () => {
+      clients = clients.filter(c => c.id !== clientId);
+    });
+  });
+
+  // Auth Middleware
+  const authenticate = (req: any, res: any, next: any) => {
+    const token = req.cookies.token;
+    if (!token) return res.status(401).json({ error: 'Not authenticated' });
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET) as { uid: string };
+      req.user = decoded;
+      next();
+    } catch (err) {
+      res.status(401).json({ error: 'Invalid token' });
+    }
+  };
+
+  const isAdmin = (req: any, res: any, next: any) => {
+    authenticate(req, res, () => {
+      const db = getDb();
+      const user = db.users.find((u: any) => u.uid === req.user.uid);
+      if (user && user.role === 'admin') {
+        next();
+      } else {
+        res.status(403).json({ error: 'Admin access required' });
+      }
+    });
+  };
+
+  const generateCustomerID = () => {
+    return 'CUST-' + Math.floor(100000 + Math.random() * 900000);
+  };
+
+  // API Routes
+  app.post('/api/auth/signup', async (req, res) => {
+    try {
+      console.log('Signup request received:', { email: req.body?.email, name: req.body?.name });
+      const { email, password, name } = req.body;
+      
+      if (!email || !password || !name) {
+        console.log('Signup failed: Missing fields');
+        return res.status(400).json({ error: 'Missing required fields' });
+      }
+
+      const db = getDb();
+      
+      if (db.users.find((u: any) => u.email === email)) {
+        console.log('Signup failed: User already exists', email);
+        return res.status(400).json({ error: 'User already exists' });
+      }
+
+      console.log('Hashing password for:', email);
+      const hashedPassword = await bcrypt.hash(password, 10);
+      console.log('Password hashed successfully');
+
+      const newUser = {
+        uid: Math.random().toString(36).substring(2, 15),
+        email,
+        password: hashedPassword,
+        name,
+        role: (email === 'admin12345@gmail.com') ? 'admin' : 'user',
+        customerID: generateCustomerID(),
+        createdAt: new Date().toISOString()
+      };
+
+      db.users.push(newUser);
+      saveDb(db);
+      broadcast('user_update', { userId: newUser.uid });
+
+      const token = jwt.sign({ uid: newUser.uid }, JWT_SECRET, { expiresIn: '30d' });
+      res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge: 30 * 24 * 60 * 60 * 1000 });
+      
+      const { password: _, ...userWithoutPassword } = newUser;
+      console.log('Signup successful:', email);
+      res.json(userWithoutPassword);
+    } catch (error: any) {
+      console.error('Signup error:', error);
+      res.status(500).json({ error: 'Signup failed', message: error.message });
+    }
+  });
+
+  app.post('/api/auth/login', async (req, res) => {
+    try {
+      console.log('Login request received:', { email: req.body?.email });
+      const { email, password } = req.body;
+      
+      if (!email || !password) {
+        console.log('Login failed: Missing fields');
+        return res.status(400).json({ error: 'Missing email or password' });
+      }
+
+      const db = getDb();
+      const user = db.users.find((u: any) => u.email === email);
+
+      if (!user) {
+        console.log('Login failed: User not found', email);
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+
+      console.log('Comparing passwords for:', email);
+      const isMatch = await bcrypt.compare(password, user.password);
+      console.log('Password match result:', isMatch);
+
+      if (!isMatch) {
+        console.log('Login failed: Password mismatch', email);
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+
+      const token = jwt.sign({ uid: user.uid }, JWT_SECRET, { expiresIn: '30d' });
+      res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge: 30 * 24 * 60 * 60 * 1000 });
+      
+      const { password: _, ...userWithoutPassword } = user;
+      console.log('Login successful:', email);
+      res.json(userWithoutPassword);
+    } catch (error: any) {
+      console.error('Login error:', error);
+      res.status(500).json({ error: 'Login failed', message: error.message });
+    }
+  });
+
+  app.get('/api/auth/me', (req, res) => {
+    const token = req.cookies.token;
+    if (!token) return res.status(401).json({ error: 'Not authenticated' });
+
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET) as { uid: string };
+      const db = getDb();
+      const user = db.users.find((u: any) => u.uid === decoded.uid);
+      if (!user) return res.status(401).json({ error: 'User not found' });
+
+      const { password: _, ...userWithoutPassword } = user;
+      res.json(userWithoutPassword);
+    } catch (err) {
+      res.status(401).json({ error: 'Invalid token' });
+    }
+  });
+
+  app.post('/api/auth/logout', (req, res) => {
+    res.clearCookie('token', { httpOnly: true, secure: true, sameSite: 'none' });
+    res.json({ success: true });
+  });
+
+  // Google OAuth Routes
+  app.get('/api/auth/google/url', (req, res) => {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (!clientId) {
+      return res.status(500).json({ error: 'GOOGLE_CLIENT_ID is not configured' });
+    }
+
+    const redirectUri = `${process.env.APP_URL || `http://localhost:${PORT}`}/api/auth/google/callback`;
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: 'openid email profile',
+      access_type: 'offline',
+      prompt: 'select_account'
+    });
+
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+    res.json({ url: authUrl });
+  });
+
+  app.get('/api/auth/google/callback', async (req, res) => {
+    const { code } = req.query;
+    if (!code) return res.status(400).send('Missing code');
+
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+      return res.status(500).send('Google OAuth is not fully configured');
+    }
+
+    try {
+      const redirectUri = `${process.env.APP_URL || `http://localhost:${PORT}`}/api/auth/google/callback`;
+
+      // Exchange code for tokens
+      const tokenRes = await axios.post('https://oauth2.googleapis.com/token', {
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code'
+      });
+
+      const { access_token } = tokenRes.data;
+
+      // Get user info
+      const userRes = await axios.get('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${access_token}` }
+      });
+
+      const googleUser = userRes.data;
+      const db = getDb();
+      
+      let user = db.users.find((u: any) => u.email === googleUser.email);
+      
+      if (!user) {
+        user = {
+          uid: Math.random().toString(36).substring(2, 15),
+          email: googleUser.email,
+          name: googleUser.name,
+          role: (googleUser.email === 'admin12345@gmail.com') ? 'admin' : 'user',
+          customerID: generateCustomerID(),
+          createdAt: new Date().toISOString(),
+          photoURL: googleUser.picture
+        };
+        db.users.push(user);
+        saveDb(db);
+      }
+
+      const token = jwt.sign({ uid: user.uid }, JWT_SECRET, { expiresIn: '30d' });
+      res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'none', maxAge: 30 * 24 * 60 * 60 * 1000 });
+
+      res.send(`
+        <html>
+          <body>
+            <script>
+              if (window.opener) {
+                window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS' }, '*');
+                window.close();
+              } else {
+                window.location.href = '/';
+              }
+            </script>
+            <p>Authentication successful. This window should close automatically.</p>
+          </body>
+        </html>
+      `);
+    } catch (err: any) {
+      console.error('Google OAuth error:', err.response?.data || err.message);
+      res.status(500).send('Authentication failed');
+    }
+  });
+
+  // Users API
+  app.get('/api/users', isAdmin, (req, res) => {
+    const db = getDb();
+    const usersWithoutPasswords = db.users.map((u: any) => {
+      const { password, ...userWithoutPassword } = u;
+      return userWithoutPassword;
+    });
+    res.json(usersWithoutPasswords);
+  });
+
+  app.get('/api/users/:id', (req, res) => {
+    const db = getDb();
+    const user = db.users.find((u: any) => u.uid === req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const { password: _, ...userWithoutPassword } = user;
+    res.json(userWithoutPassword);
+  });
+
+  app.put('/api/users/:id', (req, res) => {
+    const db = getDb();
+    const index = db.users.findIndex((u: any) => u.uid === req.params.id);
+    if (index === -1) {
+      db.users.push(req.body);
+    } else {
+      db.users[index] = { ...db.users[index], ...req.body };
+    }
+    saveDb(db);
+    broadcast('user_update', { userId: req.params.id });
+    res.json({ success: true });
+  });
+
+  app.delete('/api/users/:id', isAdmin, (req, res) => {
+    const db = getDb();
+    const user = db.users.find((u: any) => u.uid === req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.role === 'admin') return res.status(400).json({ error: 'Cannot delete admin account' });
+    db.users = db.users.filter((u: any) => u.uid !== req.params.id);
+    saveDb(db);
+    broadcast('user_update', { userId: req.params.id, deleted: true });
+    res.json({ success: true });
+  });
+
+  // Shipments API
+  app.get('/api/shipments', (req, res) => {
+    const db = getDb();
+    res.json(db.shipments);
+  });
+
+  app.get('/api/shipments/:id', (req, res) => {
+    const db = getDb();
+    const searchId = req.params.id.toUpperCase();
+    // Allow lookup by ID or Tracking Number
+    const shipment = db.shipments.find((s: any) => 
+      s.id.toUpperCase() === searchId || 
+      (s.trackingNumber && s.trackingNumber.toUpperCase() === searchId)
+    );
+    if (!shipment) return res.status(404).json({ error: 'Shipment not found' });
+    res.json(shipment);
+  });
+
+  app.post('/api/shipments', isAdmin, (req, res) => {
+    const db = getDb();
+    const newShipment = { ...req.body, id: Math.random().toString(36).substring(2, 15), createdAt: new Date().toISOString() };
+    db.shipments.push(newShipment);
+    saveDb(db);
+    broadcast('shipment_update', { id: newShipment.id });
+    res.json(newShipment);
+  });
+
+  app.put('/api/shipments/:id', isAdmin, (req, res) => {
+    const db = getDb();
+    const searchId = req.params.id.toUpperCase();
+    const index = db.shipments.findIndex((s: any) => 
+      s.id.toUpperCase() === searchId || 
+      (s.trackingNumber && s.trackingNumber.toUpperCase() === searchId)
+    );
+    
+    const dataToSave = { ...req.body };
+    if (dataToSave.trackingNumber) {
+      dataToSave.trackingNumber = dataToSave.trackingNumber.toUpperCase();
+    }
+
+    if (index === -1) {
+      db.shipments.push({ ...dataToSave, id: req.params.id });
+    } else {
+      db.shipments[index] = { ...db.shipments[index], ...dataToSave };
+    }
+    saveDb(db);
+    broadcast('shipment_update', { id: req.params.id });
+    res.json(db.shipments[index === -1 ? db.shipments.length - 1 : index]);
+  });
+
+  app.post('/api/shipments/:id/claim', authenticate, (req, res) => {
+    const db = getDb();
+    const searchId = req.params.id.toUpperCase();
+    const index = db.shipments.findIndex((s: any) => 
+      s.id === req.params.id || 
+      (s.trackingNumber && s.trackingNumber.toUpperCase() === searchId)
+    );
+    if (index === -1) return res.status(404).json({ error: 'Shipment not found' });
+    
+    const user = db.users.find((u: any) => u.uid === (req as any).user.uid);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const shipment = db.shipments[index];
+    
+    // Allow claiming if receiverEmail OR senderEmail matches, or if it's unassigned
+    if (
+      shipment.receiverEmail === user.email || 
+      shipment.senderEmail === user.email ||
+      !shipment.senderId || 
+      shipment.senderId === 'admin'
+    ) {
+      db.shipments[index].senderId = user.uid;
+      saveDb(db);
+      broadcast('shipment_update', { id: shipment.id });
+      res.json(db.shipments[index]);
+    } else {
+      res.status(403).json({ error: 'You are not authorized to claim this shipment.' });
+    }
+  });
+
+  app.delete('/api/shipments/:id', isAdmin, (req, res) => {
+    const db = getDb();
+    db.shipments = db.shipments.filter((s: any) => s.id !== req.params.id);
+    saveDb(db);
+    broadcast('shipment_update', { id: req.params.id, deleted: true });
+    res.json({ success: true });
+  });
+
+  app.get('/api/shipments/:id/updates', (req, res) => {
+    const db = getDb();
+    const searchId = req.params.id.toUpperCase();
+    const shipment = db.shipments.find((s: any) => 
+      s.id === req.params.id || 
+      (s.trackingNumber && s.trackingNumber.toUpperCase() === searchId)
+    );
+    if (!shipment) return res.status(404).json({ error: 'Shipment not found' });
+    res.json(shipment.updates || []);
+  });
+
+  app.post('/api/shipments/:id/updates', (req, res) => {
+    const db = getDb();
+    const searchId = req.params.id.toUpperCase();
+    const index = db.shipments.findIndex((s: any) => 
+      s.id === req.params.id || 
+      (s.trackingNumber && s.trackingNumber.toUpperCase() === searchId)
+    );
+    if (index === -1) return res.status(404).json({ error: 'Shipment not found' });
+    
+    if (!db.shipments[index].updates) db.shipments[index].updates = [];
+    const newUpdate = { ...req.body, id: Math.random().toString(36).substring(2, 15) };
+    db.shipments[index].updates.push(newUpdate);
+    
+    // Also update the main shipment status
+    if (req.body.status) {
+      db.shipments[index].status = req.body.status;
+    }
+    
+    saveDb(db);
+    res.json(newUpdate);
+  });
+
+  // Flights API
+  app.get('/api/flights', (req, res) => {
+    const db = getDb();
+    res.json(db.flights);
+  });
+
+  app.get('/api/flights/:id', (req, res) => {
+    const db = getDb();
+    const searchId = req.params.id.toUpperCase();
+    // Allow lookup by ID or Flight Number
+    const flight = db.flights.find((f: any) => 
+      f.id.toUpperCase() === searchId || 
+      (f.flightNumber && f.flightNumber.toUpperCase() === searchId)
+    );
+    if (!flight) return res.status(404).json({ error: 'Flight not found' });
+    res.json(flight);
+  });
+
+  app.post('/api/flights/:id/claim', authenticate, (req, res) => {
+    const db = getDb();
+    const searchId = req.params.id.toUpperCase();
+    const index = db.flights.findIndex((f: any) => 
+      f.id === req.params.id || 
+      (f.flightNumber && f.flightNumber.toUpperCase() === searchId)
+    );
+    if (index === -1) return res.status(404).json({ error: 'Flight not found' });
+    
+    const user = db.users.find((u: any) => u.uid === (req as any).user.uid);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    if (!db.flights[index].userIds) db.flights[index].userIds = [];
+    
+    if (!db.flights[index].userIds.includes(user.uid)) {
+      db.flights[index].userIds.push(user.uid);
+      saveDb(db);
+      broadcast('flight_update', { id: req.params.id });
+    }
+    
+    res.json(db.flights[index]);
+  });
+
+  app.post('/api/flights', isAdmin, (req, res) => {
+    const db = getDb();
+    const newFlight = { ...req.body, id: Math.random().toString(36).substring(2, 15) };
+    db.flights.push(newFlight);
+    saveDb(db);
+    broadcast('flight_update', { id: newFlight.id });
+    res.json(newFlight);
+  });
+
+  app.put('/api/flights/:id', isAdmin, (req, res) => {
+    const db = getDb();
+    const searchId = req.params.id.toUpperCase();
+    const index = db.flights.findIndex((f: any) => 
+      f.id.toUpperCase() === searchId || 
+      (f.flightNumber && f.flightNumber.toUpperCase() === searchId)
+    );
+    
+    const dataToSave = { ...req.body };
+    if (dataToSave.flightNumber) {
+      dataToSave.flightNumber = dataToSave.flightNumber.toUpperCase();
+    }
+
+    if (index === -1) {
+      db.flights.push({ ...dataToSave, id: req.params.id });
+    } else {
+      db.flights[index] = { ...db.flights[index], ...dataToSave };
+    }
+    saveDb(db);
+    broadcast('flight_update', { id: req.params.id });
+    res.json(db.flights[index === -1 ? db.flights.length - 1 : index]);
+  });
+
+  app.delete('/api/flights/:id', isAdmin, (req, res) => {
+    const db = getDb();
+    db.flights = db.flights.filter((f: any) => f.id !== req.params.id);
+    saveDb(db);
+    broadcast('flight_update', { id: req.params.id, deleted: true });
+    res.json({ success: true });
+  });
+
+  app.get('/api/flights/:id/updates', (req, res) => {
+    const db = getDb();
+    const searchId = req.params.id.toUpperCase();
+    const flight = db.flights.find((f: any) => 
+      f.id === req.params.id || 
+      (f.flightNumber && f.flightNumber.toUpperCase() === searchId)
+    );
+    if (!flight) return res.status(404).json({ error: 'Flight not found' });
+    res.json(flight.updates || []);
+  });
+
+  app.post('/api/flights/:id/updates', isAdmin, (req, res) => {
+    const db = getDb();
+    const searchId = req.params.id.toUpperCase();
+    const index = db.flights.findIndex((f: any) => 
+      f.id === req.params.id || 
+      (f.flightNumber && f.flightNumber.toUpperCase() === searchId)
+    );
+    if (index === -1) return res.status(404).json({ error: 'Flight not found' });
+    
+    if (!db.flights[index].updates) db.flights[index].updates = [];
+    const newUpdate = { ...req.body, id: Math.random().toString(36).substring(2, 15) };
+    db.flights[index].updates.push(newUpdate);
+    saveDb(db);
+    broadcast('flight_update', { id: req.params.id, update: newUpdate });
+    res.json(newUpdate);
+  });
+
+  // Support Tickets API
+  app.get('/api/supportTickets', (req, res) => {
+    const db = getDb();
+    res.json(db.supportTickets);
+  });
+
+  app.post('/api/supportTickets', (req, res) => {
+    const db = getDb();
+    const newTicket = { ...req.body, id: Math.random().toString(36).substring(2, 15), createdAt: new Date().toISOString() };
+    db.supportTickets.push(newTicket);
+    saveDb(db);
+    res.json(newTicket);
+  });
+
+  app.put('/api/supportTickets/:id', (req, res) => {
+    const db = getDb();
+    const index = db.supportTickets.findIndex((t: any) => t.id === req.params.id);
+    if (index === -1) {
+      db.supportTickets.push({ ...req.body, id: req.params.id });
+    } else {
+      db.supportTickets[index] = { ...db.supportTickets[index], ...req.body };
+    }
+    saveDb(db);
+    res.json(db.supportTickets[index === -1 ? db.supportTickets.length - 1 : index]);
+  });
+
+  app.delete('/api/supportTickets/:id', isAdmin, (req, res) => {
+    const db = getDb();
+    db.supportTickets = db.supportTickets.filter((t: any) => t.id !== req.params.id);
+    saveDb(db);
+    res.json({ success: true });
+  });
+
+  // Reviews API
+  app.get('/api/reviews', (req, res) => {
+    const db = getDb();
+    res.json(db.reviews);
+  });
+
+  app.post('/api/reviews', (req, res) => {
+    const db = getDb();
+    const newReview = { ...req.body, id: Math.random().toString(36).substring(2, 15), createdAt: new Date().toISOString() };
+    db.reviews.push(newReview);
+    saveDb(db);
+    res.json(newReview);
+  });
+
+  app.put('/api/reviews/:id', (req, res) => {
+    const db = getDb();
+    const index = db.reviews.findIndex((r: any) => r.id === req.params.id);
+    if (index === -1) {
+      db.reviews.push({ ...req.body, id: req.params.id });
+    } else {
+      db.reviews[index] = { ...db.reviews[index], ...req.body };
+    }
+    saveDb(db);
+    res.json(db.reviews[index === -1 ? db.reviews.length - 1 : index]);
+  });
+
+  // News API
+  app.get('/api/news', (req, res) => {
+    const db = getDb();
+    res.json(db.news || []);
+  });
+
+  app.post('/api/news', isAdmin, (req, res) => {
+    const db = getDb();
+    const newArticle = { ...req.body, id: Math.random().toString(36).substring(2, 15), publishedAt: new Date().toISOString() };
+    if (!db.news) db.news = [];
+    db.news.push(newArticle);
+    saveDb(db);
+    res.json(newArticle);
+  });
+
+  app.put('/api/news/:id', isAdmin, (req, res) => {
+    const db = getDb();
+    if (!db.news) db.news = [];
+    const index = db.news.findIndex((n: any) => n.id === req.params.id);
+    if (index === -1) {
+      db.news.push({ ...req.body, id: req.params.id });
+    } else {
+      db.news[index] = { ...db.news[index], ...req.body };
+    }
+    saveDb(db);
+    res.json(db.news[index === -1 ? db.news.length - 1 : index]);
+  });
+
+  app.delete('/api/news/:id', isAdmin, (req, res) => {
+    const db = getDb();
+    if (!db.news) db.news = [];
+    db.news = db.news.filter((n: any) => n.id !== req.params.id);
+    saveDb(db);
+    res.json({ success: true });
+  });
+
+  // Catch-all for unmatched API routes
+  app.all('/api/*', (req, res) => {
+    console.log('Unmatched API request:', req.method, req.url);
+    res.status(404).json({ error: 'API route not found', method: req.method, url: req.url });
+  });
+
+  // Vite middleware for development
+  try {
+    if (process.env.NODE_ENV !== 'production') {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), 'dist');
+      if (fs.existsSync(distPath)) {
+        app.use(express.static(distPath));
+        app.get('*', (req, res) => {
+          res.sendFile(path.join(distPath, 'index.html'));
+        });
+      } else {
+        console.warn('Dist folder not found. API routes are still active.');
+      }
+    }
+  } catch (err) {
+    console.error('Error initializing Vite/Static middleware:', err);
+  }
+
+  // Global Error Handler
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('Unhandled Server Error:', err);
+    res.status(500).json({ error: 'Internal Server Error', message: err.message });
+  });
+
+  app.listen(PORT, '0.0.0.0', async () => {
+    // Ensure default admin exists
+    const db = getDb();
+    const adminEmail = 'admin12345@gmail.com';
+    if (!db.users.find((u: any) => u.email === adminEmail)) {
+      const hashedPassword = await bcrypt.hash('admin12345', 10);
+      db.users.push({
+        uid: 'admin-uid',
+        email: adminEmail,
+        password: hashedPassword,
+        name: 'System Administrator',
+        role: 'admin',
+        customerID: 'ADMIN-001',
+        createdAt: new Date().toISOString()
+      });
+      saveDb(db);
+      console.log('Default admin created: admin12345@gmail.com / admin12345');
+    }
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();
