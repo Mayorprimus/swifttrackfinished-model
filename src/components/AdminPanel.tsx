@@ -3,6 +3,17 @@ import { api } from '../api';
 import { Shipment, ShipmentStatus, TrackingUpdate, Flight, FlightStatus, SupportTicket, Review } from '../types';
 import { Search, Edit2, Plus, ArrowRight, Loader2, MapPin, Info, Plane, MessageSquare, Package, CheckCircle, XCircle, Star, FileText, Printer, X, Clock, Trash2, Activity, History } from 'lucide-react';
 import { format } from 'date-fns';
+// Safari (iOS) returns Invalid Date for some strings Chrome accepts, and
+// date-fns ormat throws on Invalid Date. Never let a bad date crash the UI.
+function safeFormat(dateValue: any, pattern: string): string {
+  try {
+    const d = new Date(dateValue);
+    if (isNaN(d.getTime())) return 'N/A';
+    return format(d, pattern);
+  } catch {
+    return 'N/A';
+  }
+}
 import { motion } from 'motion/react';
 import Logo from './Logo';
 
@@ -435,7 +446,7 @@ export default function AdminPanel() {
                     <div className="flex flex-col gap-2">
                       <span className="text-xs font-black tracking-tight text-text uppercase">Shipment {shipment.trackingNumber} updated</span>
                       <div className="flex items-center gap-2">
-                        <span className="text-micro font-mono text-muted">{format(new Date(shipment.createdAt), 'HH:mm:ss')}</span>
+                        <span className="text-micro font-mono text-muted">{safeFormat(shipment.createdAt, 'HH:mm:ss')}</span>
                         <span className="text-micro font-bold text-primary uppercase tracking-widest px-1.5 py-0.5 bg-bg border border-border">
                           {shipment.status}
                         </span>
@@ -850,9 +861,9 @@ export default function AdminPanel() {
                     <div className="flex flex-col gap-1">
                       <span className="text-micro opacity-50">Schedule</span>
                       <div className="flex items-center gap-2 font-mono text-xs">
-                        <span>{flight.departureTime ? format(new Date(flight.departureTime), 'HH:mm') : '--:--'}</span>
+                        <span>{flight.departureTime ? safeFormat(flight.departureTime, 'HH:mm') : '--:--'}</span>
                         <ArrowRight className="w-3 h-3 opacity-30" />
-                        <span>{flight.arrivalTime ? format(new Date(flight.arrivalTime), 'HH:mm') : '--:--'}</span>
+                        <span>{flight.arrivalTime ? safeFormat(flight.arrivalTime, 'HH:mm') : '--:--'}</span>
                       </div>
                     </div>
                     <select 
@@ -993,7 +1004,7 @@ export default function AdminPanel() {
                         ticket.status === 'pending' ? 'bg-blue-500' : 'bg-emerald-500'
                       }`} />
                       <span className="text-micro font-bold text-muted uppercase tracking-widest">
-                        {ticket.status} // {format(new Date(ticket.createdAt), 'yyyy.MM.dd HH:mm:ss')}
+                        {ticket.status} // {safeFormat(ticket.createdAt, 'yyyy.MM.dd HH:mm:ss')}
                       </span>
                     </div>
                     <h4 className="text-2xl font-black tracking-tighter heading-display text-text uppercase">{ticket.subject}</h4>
@@ -1084,7 +1095,7 @@ export default function AdminPanel() {
                   <div className="flex justify-between items-start">
                     <div className="flex flex-col">
                       <span className="text-sm font-black tracking-tight text-text uppercase">{review.userName}</span>
-                      <span className="text-micro font-bold text-muted uppercase tracking-widest">{format(new Date(review.createdAt), 'yyyy.MM.dd')}</span>
+                      <span className="text-micro font-bold text-muted uppercase tracking-widest">{safeFormat(review.createdAt, 'yyyy.MM.dd')}</span>
                     </div>
                     <div className="flex gap-0.5">
                       {[1, 2, 3, 4, 5].map(star => (
@@ -1222,7 +1233,7 @@ export default function AdminPanel() {
                   </div>
                   <div className="col-span-2 sm:p-4 text-xs font-mono text-muted mt-2 sm:mt-0">
                     <span className="sm:hidden text-[9px] text-muted uppercase tracking-widest mr-2">Registry_Date:</span>
-                    {user.createdAt ? format(new Date(user.createdAt), 'yyyy.MM.dd') : 'N/A'}
+                    {user.createdAt ? safeFormat(user.createdAt, 'yyyy.MM.dd') : 'N/A'}
                   </div>
                   <div className="col-span-1 sm:p-4 text-right mt-2 sm:mt-0">
                     {user.role !== 'admin' && (
@@ -1710,7 +1721,7 @@ export default function AdminPanel() {
                 <div className="flex flex-col">
                   <span className="text-[10px] font-bold text-muted uppercase tracking-widest mb-1">Date Issued</span>
                   <span className="text-lg sm:text-xl font-bold font-mono text-text">
-                    {'date' in showReceipt ? format(new Date(showReceipt.date), 'MMM dd, yyyy') : format(new Date(), 'MMM dd, yyyy')}
+                    {'date' in showReceipt ? safeFormat(showReceipt.date, 'MMM dd, yyyy') : format(new Date(), 'MMM dd, yyyy')}
                   </span>
                 </div>
               </div>
@@ -1790,11 +1801,11 @@ export default function AdminPanel() {
                     </div>
                     <div className="flex flex-col">
                       <span className="text-[10px] font-bold text-muted uppercase tracking-widest mb-1">Departure</span>
-                      <span className="text-sm sm:text-base font-bold text-text">{format(new Date(showReceipt.departureTime), 'MMM dd, HH:mm')}</span>
+                      <span className="text-sm sm:text-base font-bold text-text">{safeFormat(showReceipt.departureTime, 'MMM dd, HH:mm')}</span>
                     </div>
                     <div className="flex flex-col">
                       <span className="text-[10px] font-bold text-muted uppercase tracking-widest mb-1">Arrival</span>
-                      <span className="text-sm sm:text-base font-bold text-text">{format(new Date(showReceipt.arrivalTime), 'MMM dd, HH:mm')}</span>
+                      <span className="text-sm sm:text-base font-bold text-text">{safeFormat(showReceipt.arrivalTime, 'MMM dd, HH:mm')}</span>
                     </div>
                   </>
                 )}
@@ -1871,3 +1882,4 @@ export default function AdminPanel() {
     </div>
   );
 }
+

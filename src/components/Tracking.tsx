@@ -6,6 +6,18 @@ import { Search, Package, MapPin, Clock, AlertCircle, Loader2, Star, Plane, Glob
 import { motion } from 'motion/react';
 import { format } from 'date-fns';
 
+// Safari (iOS) returns Invalid Date for some strings Chrome accepts, and
+// date-fns `format` throws on Invalid Date. Never let a bad date crash the UI.
+function safeFormat(dateValue: any, pattern: string): string {
+  try {
+    const d = new Date(dateValue);
+    if (isNaN(d.getTime())) return 'N/A';
+    return format(d, pattern);
+  } catch {
+    return 'N/A';
+  }
+}
+
 type TrackingType = 'shipment' | 'flight';
 
 interface TrackingProps {
@@ -352,7 +364,7 @@ export default function Tracking({ profile }: TrackingProps) {
                 </div>
                 <div className="flex flex-col gap-2">
                   <span className="text-micro text-white/40">SHIPPED DATE</span>
-                  <span className="text-lg font-medium text-white/60">{format(new Date(shipment.shippedDate || shipment.createdAt), 'MMM dd, yyyy')}</span>
+                  <span className="text-lg font-medium text-white/60">{safeFormat(shipment.shippedDate || shipment.createdAt, 'MMM dd, yyyy')}</span>
                 </div>
               </div>
             </div>
@@ -368,7 +380,7 @@ export default function Tracking({ profile }: TrackingProps) {
                 <div className="bg-white p-12 flex flex-col gap-4">
                   <div className="flex items-center gap-4">
                     <span className="text-micro text-accent">ORIGIN</span>
-                    <span className="text-micro text-muted">{format(new Date(shipment.createdAt), 'MMM dd, yyyy HH:mm')}</span>
+                    <span className="text-micro text-muted">{safeFormat(shipment.createdAt, 'MMM dd, yyyy HH:mm')}</span>
                   </div>
                   <h5 className="text-2xl font-black heading-display uppercase tracking-tight">Shipment Registered</h5>
                   <p className="text-muted font-medium max-w-2xl leading-relaxed">The shipment has been registered in our system and is awaiting pickup at the origin facility.</p>
@@ -379,7 +391,7 @@ export default function Tracking({ profile }: TrackingProps) {
                     <div className="flex items-center justify-between flex-wrap gap-4">
                       <div className="flex items-center gap-4">
                         <span className={`text-micro ${idx === 0 ? 'text-accent' : 'text-muted'}`}>STEP {updates.length - idx}</span>
-                        <span className="text-micro text-muted">{format(new Date(update.timestamp), 'MMM dd, yyyy HH:mm')}</span>
+                        <span className="text-micro text-muted">{safeFormat(update.timestamp, 'MMM dd, yyyy HH:mm')}</span>
                       </div>
                       <span className="text-micro text-primary flex items-center gap-2">
                         <MapPin className="w-3 h-3" /> {update.location}
@@ -427,7 +439,7 @@ export default function Tracking({ profile }: TrackingProps) {
               <div className="flex flex-col items-center sm:items-start gap-2">
                 <span className="text-micro text-white/40">ORIGIN</span>
                 <span className="text-5xl sm:text-8xl font-black tracking-tighter heading-display uppercase">{flight.origin}</span>
-                <span className="text-lg font-medium text-white/60">{flight.departureTime ? format(new Date(flight.departureTime), 'HH:mm') : '--:--'}</span>
+                <span className="text-lg font-medium text-white/60">{flight.departureTime ? safeFormat(flight.departureTime, 'HH:mm') : '--:--'}</span>
               </div>
               <div className="flex-1 w-full sm:w-auto flex items-center justify-center">
                 <div className="w-full h-[1px] bg-white/10 relative">
@@ -437,18 +449,18 @@ export default function Tracking({ profile }: TrackingProps) {
               <div className="flex flex-col items-center sm:items-end gap-2">
                 <span className="text-micro text-white/40">DESTINATION</span>
                 <span className="text-5xl sm:text-8xl font-black tracking-tighter heading-display uppercase">{flight.destination}</span>
-                <span className="text-lg font-medium text-white/60">{flight.arrivalTime ? format(new Date(flight.arrivalTime), 'HH:mm') : '--:--'}</span>
+                <span className="text-lg font-medium text-white/60">{flight.arrivalTime ? safeFormat(flight.arrivalTime, 'HH:mm') : '--:--'}</span>
               </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-12">
               <div className="flex flex-col gap-2">
                 <span className="text-micro text-white/40">DEPARTURE DATE</span>
-                <span className="text-xl font-black heading-display uppercase tracking-tight">{flight.departureTime ? format(new Date(flight.departureTime), 'MMM dd, yyyy') : 'N/A'}</span>
+                <span className="text-xl font-black heading-display uppercase tracking-tight">{flight.departureTime ? safeFormat(flight.departureTime, 'MMM dd, yyyy') : 'N/A'}</span>
               </div>
               <div className="flex flex-col gap-2">
                 <span className="text-micro text-white/40">ARRIVAL DATE</span>
-                <span className="text-xl font-black heading-display uppercase tracking-tight">{flight.arrivalTime ? format(new Date(flight.arrivalTime), 'MMM dd, yyyy') : 'N/A'}</span>
+                <span className="text-xl font-black heading-display uppercase tracking-tight">{flight.arrivalTime ? safeFormat(flight.arrivalTime, 'MMM dd, yyyy') : 'N/A'}</span>
               </div>
               <div className="flex flex-col gap-2 sm:text-right">
                 <span className="text-micro text-white/40">AIRCRAFT TYPE</span>
@@ -532,7 +544,7 @@ export default function Tracking({ profile }: TrackingProps) {
                   <div className="flex items-center gap-4">
                     <span className="text-micro text-accent">SCHEDULED</span>
                     <span className="text-micro text-muted">
-                      {flight.departureTime ? format(new Date(flight.departureTime), 'MMM dd, yyyy HH:mm') : 'N/A'}
+                      {flight.departureTime ? safeFormat(flight.departureTime, 'MMM dd, yyyy HH:mm') : 'N/A'}
                     </span>
                   </div>
                   <h5 className="text-2xl font-black heading-display uppercase tracking-tight">Flight Scheduled</h5>
@@ -546,7 +558,7 @@ export default function Tracking({ profile }: TrackingProps) {
                     <div className="flex items-center justify-between flex-wrap gap-4">
                       <div className="flex items-center gap-4">
                         <span className={`text-micro ${idx === 0 ? 'text-accent' : 'text-muted'}`}>STEP {updates.length - idx}</span>
-                        <span className="text-micro text-muted">{format(new Date(update.timestamp), 'MMM dd, yyyy HH:mm')}</span>
+                        <span className="text-micro text-muted">{safeFormat(update.timestamp, 'MMM dd, yyyy HH:mm')}</span>
                       </div>
                       <span className="text-micro text-primary flex items-center gap-2">
                         <MapPin className="w-3 h-3" /> {update.location}
@@ -595,7 +607,7 @@ export default function Tracking({ profile }: TrackingProps) {
                 </div>
                 <p className="text-xl font-medium text-muted italic leading-relaxed">"{review.comment}"</p>
                 <span className="text-micro text-muted uppercase tracking-widest">
-                  {format(new Date(review.createdAt), 'MMM dd, yyyy')}
+                  {safeFormat(review.createdAt, 'MMM dd, yyyy')}
                 </span>
               </div>
             ))}

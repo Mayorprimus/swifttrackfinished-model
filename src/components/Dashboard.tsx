@@ -3,6 +3,17 @@ import { api } from '../api';
 import { Shipment, UserProfile } from '../types';
 import { Package, Search, User, Mail, Calendar, Shield, Hash, Plus, CheckCircle2, AlertCircle, MapPin, Activity, Plane, ArrowRight, BarChart3, Clock, TrendingUp, Box, Truck, Globe, MessageSquare, Send, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
+// Safari (iOS) returns Invalid Date for some strings Chrome accepts, and
+// date-fns ormat throws on Invalid Date. Never let a bad date crash the UI.
+function safeFormat(dateValue: any, pattern: string): string {
+  try {
+    const d = new Date(dateValue);
+    if (isNaN(d.getTime())) return 'N/A';
+    return format(d, pattern);
+  } catch {
+    return 'N/A';
+  }
+}
 import { motion, AnimatePresence } from 'motion/react';
 import { useI18n } from '../i18n';
 
@@ -329,7 +340,7 @@ export default function Dashboard({ profile }: DashboardProps) {
                 <div className="flex items-center gap-2">
                   <Calendar className="w-3.5 h-3.5 text-white/40" />
                   <span className="text-sm font-medium text-white/80">
-                    {profile?.createdAt ? format(new Date(profile.createdAt), 'MMM dd, yyyy') : 'N/A'}
+                    {profile?.createdAt ? safeFormat(profile.createdAt, 'MMM dd, yyyy') : 'N/A'}
                   </span>
                 </div>
               </div>
@@ -501,7 +512,7 @@ export default function Dashboard({ profile }: DashboardProps) {
                           <span className="text-[10px] font-bold text-muted uppercase tracking-widest">ETA</span>
                           <div className="flex items-center gap-2">
                             <Clock className="w-3.5 h-3.5 text-accent" />
-                            <span className="text-sm font-bold text-accent">{format(new Date(shipment.estimatedDelivery), 'MMM dd, yyyy')}</span>
+                            <span className="text-sm font-bold text-accent">{safeFormat(shipment.estimatedDelivery, 'MMM dd, yyyy')}</span>
                           </div>
                         </div>
                       )}
@@ -657,7 +668,7 @@ export default function Dashboard({ profile }: DashboardProps) {
                           <div className="flex flex-col">
                             <span className="text-sm font-black text-primary heading-display uppercase">{ticket.subject}</span>
                             <span className="text-[10px] font-bold text-muted uppercase tracking-widest">
-                              {ticket.status} · {ticket.createdAt ? format(new Date(ticket.createdAt), 'MMM dd, yyyy HH:mm') : ''}
+                              {ticket.status} · {ticket.createdAt ? safeFormat(ticket.createdAt, 'MMM dd, yyyy HH:mm') : ''}
                             </span>
                           </div>
                         </div>
@@ -682,3 +693,4 @@ export default function Dashboard({ profile }: DashboardProps) {
     </div>
   );
 }
+
