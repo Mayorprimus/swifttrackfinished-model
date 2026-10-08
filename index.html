@@ -17,6 +17,48 @@
     <div id="root" translate="no" class="notranslate"></div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
+      // Fallback: even if the user manually translates, detect it and reload
+      // so React never crashes. Safari/Chrome wrap translated text in <font>
+      // tags, and Chrome adds a "translated-*" class to <html>.
+      (function () {
+        function isTranslationNode(node) {
+          return (
+            node.nodeType === 1 &&
+            node.tagName === 'FONT'
+          );
+        }
+        const observer = new MutationObserver(function (mutations) {
+          for (var i = 0; i < mutations.length; i++) {
+            var m = mutations[i];
+            if (m.type === 'childList') {
+              for (var j = 0; j < m.addedNodes.length; j++) {
+                if (isTranslationNode(m.addedNodes[j])) {
+                  observer.disconnect();
+                  window.location.reload();
+                  return;
+                }
+              }
+            }
+            if (m.type === 'attributes' && m.target === document.documentElement) {
+              var cls = document.documentElement.className || '';
+              if (/translated/i.test(cls)) {
+                observer.disconnect();
+                window.location.reload();
+                return;
+              }
+            }
+          }
+        });
+        observer.observe(document.documentElement, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+          attributes: true,
+          attributeFilter: ['class', 'lang', 'dir']
+        });
+      })();
+    </script>
+    <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js')
