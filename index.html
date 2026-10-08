@@ -27,14 +27,27 @@
             node.tagName === 'FONT'
           );
         }
+        function tryRecover(observer) {
+          var KEY = 'swifttrack_translate_reload';
+          var now = Date.now();
+          var last = Number(sessionStorage.getItem(KEY) || 0);
+          // Only reload once every 8s; if translate keeps coming back we stop
+          // reloading to avoid an infinite reload loop.
+          if (last && now - last < 8000) {
+            observer.disconnect();
+            return;
+          }
+          try { sessionStorage.setItem(KEY, String(now)); } catch (e) {}
+          observer.disconnect();
+          window.location.reload();
+        }
         const observer = new MutationObserver(function (mutations) {
           for (var i = 0; i < mutations.length; i++) {
             var m = mutations[i];
             if (m.type === 'childList') {
               for (var j = 0; j < m.addedNodes.length; j++) {
                 if (isTranslationNode(m.addedNodes[j])) {
-                  observer.disconnect();
-                  window.location.reload();
+                  tryRecover(observer);
                   return;
                 }
               }
@@ -42,8 +55,7 @@
             if (m.type === 'attributes' && m.target === document.documentElement) {
               var cls = document.documentElement.className || '';
               if (/translated/i.test(cls)) {
-                observer.disconnect();
-                window.location.reload();
+                tryRecover(observer);
                 return;
               }
             }
