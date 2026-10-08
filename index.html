@@ -17,60 +17,6 @@
     <div id="root" translate="no" class="notranslate"></div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
-      // Fallback: even if the user manually translates, detect it and reload
-      // so React never crashes. Safari/Chrome wrap translated text in <font>
-      // tags, and Chrome adds a "translated-*" class to <html>.
-      (function () {
-        function isTranslationNode(node) {
-          return (
-            node.nodeType === 1 &&
-            node.tagName === 'FONT'
-          );
-        }
-        function tryRecover(observer) {
-          var KEY = 'swifttrack_translate_reload';
-          var now = Date.now();
-          var last = Number(sessionStorage.getItem(KEY) || 0);
-          // Only reload once every 8s; if translate keeps coming back we stop
-          // reloading to avoid an infinite reload loop.
-          if (last && now - last < 8000) {
-            observer.disconnect();
-            return;
-          }
-          try { sessionStorage.setItem(KEY, String(now)); } catch (e) {}
-          observer.disconnect();
-          window.location.reload();
-        }
-        const observer = new MutationObserver(function (mutations) {
-          for (var i = 0; i < mutations.length; i++) {
-            var m = mutations[i];
-            if (m.type === 'childList') {
-              for (var j = 0; j < m.addedNodes.length; j++) {
-                if (isTranslationNode(m.addedNodes[j])) {
-                  tryRecover(observer);
-                  return;
-                }
-              }
-            }
-            if (m.type === 'attributes' && m.target === document.documentElement) {
-              var cls = document.documentElement.className || '';
-              if (/translated/i.test(cls)) {
-                tryRecover(observer);
-                return;
-              }
-            }
-          }
-        });
-        observer.observe(document.documentElement, {
-          subtree: true,
-          childList: true,
-          characterData: true,
-          attributes: true,
-          attributeFilter: ['class', 'lang', 'dir']
-        });
-      })();
-    </script>
-    <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js')

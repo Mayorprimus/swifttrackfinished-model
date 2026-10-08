@@ -25,6 +25,15 @@ class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasErr
     this.state = { hasError: false, error: null };
   }
   static getDerivedStateFromError(error: any) {
+    // Browser translation (Safari/Chrome) mutating the DOM can crash React.
+    // Auto-reload once instead of showing the error screen.
+    try {
+      const msg = (error && (error.message || error.toString())) || '';
+      if (/insertBefore|not a child|is not a child/i.test(msg) && !sessionStorage.getItem('__tr_recovered')) {
+        sessionStorage.setItem('__tr_recovered', '1');
+        window.location.reload();
+      }
+    } catch (e) {}
     return { hasError: true, error };
   }
   render() {
